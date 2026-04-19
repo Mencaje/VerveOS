@@ -73,11 +73,15 @@ endif
 
 ARCH_DIR := arch/i386
 
-ARCH_ASM := $(ARCH_DIR)/boot.S $(ARCH_DIR)/exc_asm.S $(ARCH_DIR)/gdt_asm.S $(ARCH_DIR)/irq_asm.S $(ARCH_DIR)/context.S
+ARCH_ASM := $(ARCH_DIR)/boot.S $(ARCH_DIR)/exc_asm.S $(ARCH_DIR)/gdt_asm.S \
+	$(ARCH_DIR)/irq_asm.S $(ARCH_DIR)/context.S $(ARCH_DIR)/user_asm.S
 
 ARCH_C := $(ARCH_DIR)/paging.c $(ARCH_DIR)/gdt.c $(ARCH_DIR)/idt.c $(ARCH_DIR)/pic.c $(ARCH_DIR)/pit.c $(ARCH_DIR)/lapic.c $(ARCH_DIR)/ioapic.c
 
-KERN_SRC := kernel/main.c kernel/mboot2.c kernel/serial.c kernel/pmm.c kernel/heap.c kernel/interrupt.c kernel/sched.c kernel/thread.c kernel/acpi_hw.c kernel/acpi_smp.c kernel/smp.c
+KERN_SRC := kernel/main.c kernel/mboot2.c kernel/serial.c kernel/pmm.c kernel/heap.c \
+	kernel/interrupt.c kernel/syscall.c kernel/proc.c kernel/user_bringup.c kernel/sched.c kernel/thread.c \
+	kernel/vfs_ram.c kernel/exec_flat.c \
+	kernel/acpi_hw.c kernel/acpi_smp.c kernel/smp.c
 
 OBJS := $(ARCH_ASM:.S=.o) $(KERN_SRC:.c=.o) $(ARCH_C:.c=.o) build/tramp_embed.o
 

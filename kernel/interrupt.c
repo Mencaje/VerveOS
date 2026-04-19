@@ -3,6 +3,7 @@
 #include <verve/interrupt.h>
 #include <verve/sched.h>
 #include <verve/serial.h>
+#include <verve/syscall.h>
 
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +18,11 @@ void irq_timer_set_lapic_eoi(int on)
 void verve_irq_dispatch(verve_exc_frame *f)
 {
     uint32_t v = f->vec;
+
+    if (v == 128u) {
+        syscall_invoke(f);
+        return;
+    }
 
     if (v == 64u) {
         sched_timer_tick();

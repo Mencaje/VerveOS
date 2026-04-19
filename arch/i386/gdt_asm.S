@@ -11,4 +11,6 @@ gdt_flush:
 
     ljmp $0x08, $flush
 flush:
+    movw $0x28, %ax
+    ltr %ax
     ret

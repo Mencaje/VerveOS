@@ -13,6 +13,9 @@
 #include <verve/serial.h>
 #include <verve/smp.h>
 #include <verve/thread.h>
+#include <verve/user.h>
+#include <verve/vfs_ram.h>
+#include <verve/exec_flat.h>
 
 #define VGA_COLS 80
 #define VGA_ROWS 25
@@ -94,6 +97,9 @@ void kernel_main(uint32_t magic, uint32_t mb_info_phys)
 
     heap_init();
     serial_puts("[VerveOS] heap: bump kmalloc arena (256 KiB BSS)\r\n");
+
+    verve_vfs_init();
+    verve_vfs_selftest();
 
     if (!paging_identity_init((uint32_t)pmm_max_pfn())) {
         serial_puts("[VerveOS] paging_identity_init failed\r\n");
@@ -187,6 +193,23 @@ void kernel_main(uint32_t magic, uint32_t mb_info_phys)
     serial_puts("[VerveOS] cli after thread demo\r\n");
 
     __asm__ volatile("cli");
+
+    serial_puts("[VerveOS] Ring 3 smoke (userspace + int 0x80)...\r\n");
+
+    /*
+     * `verve_user_bringup_smoke` does not return (SYS_EXIT hlt). To test
+     * `verve_exec_flat_run` (ramfs flat load + iret), set to 0 in this file
+     * and rebuild; it runs the built-in /exit.bin.
+     */
+#if !defined(VERVE_USER_SMOKE_BRINGUP)
+#define VERVE_USER_SMOKE_BRINGUP 1
+#endif
+
+#if VERVE_USER_SMOKE_BRINGUP
+    verve_user_bringup_smoke();
+#else
+    verve_exec_flat_run("/exit.bin");
+#endif
 
     serial_puts("[VerveOS] halted after thread demo\r\n");
 

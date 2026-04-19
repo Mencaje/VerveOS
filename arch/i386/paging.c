@@ -3,10 +3,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <verve/pmm.h>
 #include <verve/serial.h>
 
 #define PTE_PRESENT (1u << 0)
 #define PTE_RW      (1u << 1)
+#define PTE_US      (1u << 2)
 
 #define PT_ENTRIES 1024u
 
@@ -120,6 +122,153 @@ bool paging_identity_init(uint32_t max_pfn)
     serial_puts(" PTEs=");
     serial_put_u64_hex((uint64_t)pfns);
     serial_puts("\r\n");
+
+    return true;
+}
+
+uintptr_t paging_get_cr3(void)
+{
+    uintptr_t cr3;
+
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+
+    return cr3 & 0xFFFFF000u;
+}
+
+void paging_switch_cr3(uintptr_t pd_phys)
+{
+    cr3_load(pd_phys & 0xFFFFF000u);
+}
+
+static bool pte_fetch_pd(uintptr_t pd_phys, uintptr_t virt, uint32_t *pte_out)
+{
+    uint32_t *pd = (uint32_t *)(uintptr_t)pd_phys;
+    uint32_t pd_idx = (uint32_t)((uintptr_t)virt >> 22);
+    uint32_t pt_idx = ((uint32_t)((uintptr_t)virt >> 12)) & 0x3FFu;
+    uint32_t pd_e = pd[pd_idx];
+    uint32_t *pt;
+
+    if ((pd_e & PTE_PRESENT) == 0)
+        return false;
+
+    pt = (uint32_t *)(uintptr_t)(pd_e & 0xFFFFF000u);
+
+    if ((pt[pt_idx] & PTE_PRESENT) == 0)
+        return false;
+
+    *pte_out = pt[pt_idx];
+    return true;
+}
+
+bool paging_user_range_ok(uintptr_t va, size_t len, int for_write)
+{
+    uintptr_t end;
+
+    if (len == 0)
+        return true;
+
+    end = va + len;
+
+    if (end < va || end == 0)
+        return false;
+
+    --end;
+
+    for (uintptr_t pg = va & ~0xFFFu; pg <= (end & ~0xFFFu); pg += 4096u) {
+        uint32_t pte;
+
+        if (!pte_fetch_pd(paging_get_cr3(), pg, &pte))
+            return false;
+
+        if ((pte & PTE_US) == 0)
+            return false;
+
+        if (for_write && (pte & PTE_RW) == 0)
+            return false;
+    }
+
+    return true;
+}
+
+uintptr_t paging_clone_kernel_pd(void)
+{
+    uintptr_t n;
+    size_t i;
+
+    n = pmm_alloc_frame();
+
+    if (n == 0)
+        return 0;
+
+    {
+        uint32_t *dst = (uint32_t *)(uintptr_t)n;
+        uint32_t *src = boot_pd;
+
+        for (i = 0; i < 1024u; ++i)
+            dst[i] = src[i];
+    }
+
+    return n;
+}
+
+bool paging_map_page(uintptr_t pd_phys, uintptr_t virt, uintptr_t phys,
+    uint32_t pte_flags)
+{
+    uint32_t *pd = (uint32_t *)(uintptr_t)(pd_phys & 0xFFFFF000u);
+    unsigned pd_idx = (unsigned)((uintptr_t)virt >> 22);
+    unsigned pt_idx = ((unsigned)((uintptr_t)virt >> 12)) & 0x3FFu;
+    uint32_t pde = pd[pd_idx];
+    uintptr_t pt_phys;
+    uint32_t *pt;
+    unsigned j;
+
+    if ((pde & PTE_PRESENT) == 0) {
+        pt_phys = pmm_alloc_frame();
+
+        if (pt_phys == 0)
+            return false;
+
+        pt = (uint32_t *)(uintptr_t)pt_phys;
+
+        for (j = 0; j < 1024u; ++j)
+            pt[j] = 0;
+
+        pd[pd_idx] =
+            ((uint32_t)pt_phys & 0xFFFFF000u) | PTE_PRESENT | PTE_RW;
+    } else {
+        pt_phys = (uintptr_t)(pde & 0xFFFFF000u);
+        pt = (uint32_t *)(uintptr_t)pt_phys;
+    }
+
+    pt[pt_idx] =
+        ((uint32_t)(uintptr_t)phys & 0xFFFFF000u) | (pte_flags & 0xFFFu);
+
+    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
+
+    return true;
+}
+
+bool paging_pte_set_user(uintptr_t virt, bool user)
+{
+    uint32_t pd_idx = (uint32_t)((uintptr_t)virt >> 22);
+    uint32_t pt_idx = ((uint32_t)((uintptr_t)virt >> 12)) & 0x3FFu;
+    uint32_t pd_e = boot_pd[pd_idx];
+    uint32_t *pt;
+
+    if ((pd_e & PTE_PRESENT) == 0)
+        return false;
+
+    pt = (uint32_t *)(uintptr_t)(pd_e & 0xFFFFF000u);
+
+    if ((pt[pt_idx] & PTE_PRESENT) == 0)
+        return false;
+
+    if (user)
+        pt[pt_idx] |= PTE_US;
+    else
+        pt[pt_idx] &= ~PTE_US;
+
+    __asm__ volatile("invlpg (%0)" : : "r"(virt) : "memory");
 
     return true;
 }

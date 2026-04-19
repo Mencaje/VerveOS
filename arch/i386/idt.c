@@ -54,6 +54,7 @@ extern void irq_46(void);
 extern void irq_47(void);
 
 extern void irq_64(void);
+extern void irq_128(void);
 
 struct idt_gate {
     uint16_t off_lo;
@@ -78,6 +79,18 @@ static void idt_set(uint8_t vec, uintptr_t handler)
     idt[vec].sel = 0x08;
     idt[vec].ist_zero = 0;
     idt[vec].flags = 0x8Eu;
+    idt[vec].off_hi = (uint16_t)((h >> 16) & 0xFFFFu);
+}
+
+/* DPL=3 so Ring 3 may `int 0x80` */
+static void idt_set_user_gate(uint8_t vec, uintptr_t handler)
+{
+    uint32_t h = (uint32_t)handler;
+
+    idt[vec].off_lo = (uint16_t)(h & 0xFFFFu);
+    idt[vec].sel = 0x08;
+    idt[vec].ist_zero = 0;
+    idt[vec].flags = 0xEEu;
     idt[vec].off_hi = (uint16_t)((h >> 16) & 0xFFFFu);
 }
 
@@ -116,6 +129,8 @@ void idt_init(void)
     }
 
     idt_set(64u, (uintptr_t)irq_64);
+
+    idt_set_user_gate(128u, (uintptr_t)irq_128);
 
     struct idtr idtr;
 
