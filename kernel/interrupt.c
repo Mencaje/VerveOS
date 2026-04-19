@@ -1,3 +1,4 @@
+#include <arch/i386/lapic.h>
 #include <arch/i386/pic.h>
 #include <verve/interrupt.h>
 #include <verve/sched.h>
@@ -6,9 +7,22 @@
 #include <stddef.h>
 #include <stdint.h>
 
-__attribute__((cdecl)) void verve_irq_dispatch(verve_exc_frame *f)
+static int g_timer_lapic_eoi;
+
+void irq_timer_set_lapic_eoi(int on)
+{
+    g_timer_lapic_eoi = on;
+}
+
+void verve_irq_dispatch(verve_exc_frame *f)
 {
     uint32_t v = f->vec;
+
+    if (v == 64u) {
+        sched_timer_tick();
+        lapic_eoi();
+        return;
+    }
 
     if (v >= 32u && v < 48u) {
         uint8_t irq = (uint8_t)(v - 32u);
@@ -16,7 +30,11 @@ __attribute__((cdecl)) void verve_irq_dispatch(verve_exc_frame *f)
         if (irq == 0)
             sched_timer_tick();
 
-        pic_send_eoi(irq);
+        if (g_timer_lapic_eoi)
+            lapic_eoi();
+        else
+            pic_send_eoi(irq);
+
         return;
     }
 
@@ -26,7 +44,7 @@ __attribute__((cdecl)) void verve_irq_dispatch(verve_exc_frame *f)
         __asm__ volatile("hlt");
 }
 
-__attribute__((cdecl, noreturn)) void verve_exc_dispatch(verve_exc_frame *f)
+__attribute__((noreturn)) void verve_exc_dispatch(verve_exc_frame *f)
 {
     serial_puts("\r\n[VerveOS] CPU exception vec=0x");
     serial_put_u64_hex((uint64_t)f->vec);

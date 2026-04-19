@@ -27,6 +27,8 @@ IRQ 45
 IRQ 46
 IRQ 47
 
+IRQ 64
+
 .global irq_common
 .align 16
 irq_common:

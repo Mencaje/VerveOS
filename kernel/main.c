@@ -1,7 +1,9 @@
 #include <stdint.h>
 #include <stddef.h>
+#include <arch/i386/ioapic.h>
+#include <arch/i386/lapic.h>
 #include <arch/i386/pic.h>
-#include <arch/i386/pit.h>
+#include <verve/acpi_hw.h>
 #include <verve/interrupt.h>
 #include <verve/mboot2.h>
 #include <verve/heap.h>
@@ -9,6 +11,7 @@
 #include <verve/pmm.h>
 #include <verve/sched.h>
 #include <verve/serial.h>
+#include <verve/smp.h>
 #include <verve/thread.h>
 
 #define VGA_COLS 80
@@ -99,6 +102,51 @@ void kernel_main(uint32_t magic, uint32_t mb_info_phys)
         return;
     }
 
+    if (!acpi_hw_init(info))
+        serial_puts("[VerveOS] acpi_hw: failed; using fallback single-CPU map\r\n");
+
+    acpi_hotplug_stub_init();
+
+    gdt_init();
+    serial_puts("[VerveOS] gdt: flat ring0 segments loaded\r\n");
+
+    idt_init();
+    serial_puts("[VerveOS] idt: exceptions + IRQ + LAPIC timer vec 64\r\n");
+
+    lapic_bsp_early_init();
+
+    smp_bootstrap_apic_map();
+
+    {
+        uint32_t logical_cpus = acpi_hw_cpu_count();
+
+        if (logical_cpus == 0u)
+            logical_cpus = 1u;
+
+        thread_subsystem_early_init(logical_cpus);
+    }
+
+    pic_init(0x20, 0x28);
+    serial_puts("[VerveOS] pic: remapped master=0x20 slave=0x28\r\n");
+
+    pic_irq_mask_all();
+    serial_puts("[VerveOS] pic: all IRQ lines masked (timer via LAPIC)\r\n");
+
+    if (ioapic_init_from_acpi()) {
+        ioapic_route_irq0_timer(lapic_id());
+        serial_puts("[VerveOS] ioapic: legacy PIT/IRQ0 routed (optional)\r\n");
+    } else {
+        serial_puts("[VerveOS] ioapic: not present or disabled in MADT\r\n");
+    }
+
+    sched_init();
+    serial_puts("[VerveOS] sched: per-CPU ticks + LAPIC timer (vec 64)\r\n");
+
+    smp_init(info);
+
+    smp_bsp_timer_start();
+    serial_puts("[VerveOS] lapic: BSP periodic timer armed\r\n");
+
     uintptr_t a = pmm_alloc_frame();
 
     serial_puts("[VerveOS] pmm_alloc_frame -> ");
@@ -113,42 +161,24 @@ void kernel_main(uint32_t magic, uint32_t mb_info_phys)
     serial_put_u64_hex(b);
     serial_puts("\r\n");
 
-    gdt_init();
-    serial_puts("[VerveOS] gdt: flat ring0 segments loaded\r\n");
-
-    idt_init();
-    serial_puts("[VerveOS] idt: exceptions 0..31 + IRQ 32..47 armed\r\n");
-
-    pic_init(0x20, 0x28);
-    serial_puts("[VerveOS] pic: remapped master=0x20 slave=0x28\r\n");
-
-    pit_set_frequency_hz(50);
-    serial_puts("[VerveOS] pit: channel0 ~50 Hz\r\n");
-
-    pic_irq_unmask(0);
-    serial_puts("[VerveOS] pic: IRQ0 (timer) unmasked\r\n");
-
-    sched_init();
-    serial_puts("[VerveOS] sched: init (IRQ0 drives ticks; resched hook every 5 ticks)\r\n");
-
     vga_puts(1, 0, 0xF, 0x0, "Multiboot2: OK");
-    vga_puts(2, 0, 0xE, 0x0, "sched + IRQ0");
+    vga_puts(2, 0, 0xE, 0x0, "sched + LAPIC");
 
-    serial_puts("[VerveOS] enabling interrupts (sti), waiting for 5 timer ticks...\r\n");
+    serial_puts("[VerveOS] enabling interrupts (sti), waiting for 5 BSP timer ticks...\r\n");
 
     __asm__ volatile("sti");
 
     while (sched_tick_count() < 5)
         __asm__ volatile("hlt");
 
-    serial_puts("[VerveOS] sched: 5 ticks seen; need_resched=");
+    serial_puts("[VerveOS] sched: 5 BSP ticks seen; need_resched=");
     serial_put_u64_hex((uint64_t)(unsigned)sched_need_resched());
     serial_puts("\r\n");
 
     serial_puts("[VerveOS] clearing resched before thread demo\r\n");
     sched_clear_resched();
 
-    serial_puts("[VerveOS] sti: IRQ0 will drive sched_need_resched; threads use sched_checkpoint()\r\n");
+    serial_puts("[VerveOS] sti: LAPIC timer drives per-CPU need_resched\r\n");
 
     __asm__ volatile("sti");
 

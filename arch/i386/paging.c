@@ -11,9 +11,53 @@
 #define PT_ENTRIES 1024u
 
 #define MAX_ID_PT 128
+#define MMIO_PT_SLOTS 16
 
 static uint32_t boot_pd[1024] __attribute__((aligned(4096)));
 static uint32_t boot_pt[MAX_ID_PT][1024] __attribute__((aligned(4096)));
+
+typedef struct {
+    uint32_t used;
+    uint32_t pd_idx;
+    uint32_t tbl[1024];
+} mmio_pt_slot_t;
+
+static mmio_pt_slot_t g_mmio_pts[MMIO_PT_SLOTS];
+
+static uint32_t *mmio_pt_for_pd(uint32_t pd_idx)
+{
+    size_t i;
+
+    if (boot_pd[pd_idx] != 0u)
+        return (uint32_t *)(uintptr_t)((uintptr_t)boot_pd[pd_idx]
+            & 0xFFFFF000u);
+
+    for (i = 0; i < MMIO_PT_SLOTS; ++i) {
+        if (g_mmio_pts[i].used != 0u && g_mmio_pts[i].pd_idx == pd_idx)
+            return g_mmio_pts[i].tbl;
+    }
+
+    for (i = 0; i < MMIO_PT_SLOTS; ++i) {
+        size_t k;
+
+        if (g_mmio_pts[i].used != 0u)
+            continue;
+
+        for (k = 0; k < 1024u; ++k)
+            g_mmio_pts[i].tbl[k] = 0u;
+
+        g_mmio_pts[i].pd_idx = pd_idx;
+        g_mmio_pts[i].used = 1u;
+
+        boot_pd[pd_idx] =
+            (((uint32_t)(uintptr_t)g_mmio_pts[i].tbl) & 0xFFFFF000u)
+            | PTE_PRESENT | PTE_RW;
+
+        return g_mmio_pts[i].tbl;
+    }
+
+    return NULL;
+}
 
 static void cr3_load(uintptr_t pd_phys)
 {
@@ -76,6 +120,24 @@ bool paging_identity_init(uint32_t max_pfn)
     serial_puts(" PTEs=");
     serial_put_u64_hex((uint64_t)pfns);
     serial_puts("\r\n");
+
+    return true;
+}
+
+bool paging_map_identity_page(uintptr_t phys)
+{
+    uint32_t pd_idx = (uint32_t)((uintptr_t)phys >> 22);
+    uint32_t pt_idx = ((uint32_t)((uintptr_t)phys >> 12)) & 0x3FFu;
+    uint32_t pte = ((uint32_t)(uintptr_t)phys & 0xFFFFF000u) | PTE_PRESENT | PTE_RW;
+    uint32_t *pt;
+
+    pt = mmio_pt_for_pd(pd_idx);
+    if (!pt)
+        return false;
+
+    pt[pt_idx] = pte;
+
+    __asm__ volatile("invlpg (%0)" : : "r"(phys) : "memory");
 
     return true;
 }

@@ -19,15 +19,14 @@ typedef struct {
 } verve_exc_frame;
 
 #if defined(__GNUC__) || defined(__clang__)
-__attribute__((cdecl, noreturn))
+__attribute__((noreturn))
 #endif
 void verve_exc_dispatch(verve_exc_frame *f);
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((cdecl))
-#endif
 void verve_irq_dispatch(verve_exc_frame *f);
 
 void gdt_init(void);
 
 void idt_init(void);
+
+void irq_timer_set_lapic_eoi(int on);

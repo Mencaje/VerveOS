@@ -1,8 +1,8 @@
 # VerveOS
 
-一个面向学习与 bring-up 的 **32 位 x86（i386）** 内核实验项目：Multiboot2 引导、物理内存位图分配器、恒等分页、PIC/PIT 定时中断、协作式调度与内核线程演示。代码刻意保持短小可读，**不是**通用桌面或服务器操作系统。
+一个面向学习与 bring-up 的 **32 位 x86（i386）** 内核实验项目：Multiboot2 引导、物理内存位图分配器、恒等分页、**ACPI（RSDT/XSDT + MADT CPU / I/O APIC / IRQ0 覆盖）**、**LAPIC 周期定时器（向量 64）**、可选 **I/O APIC 路由**、**最小 SMP（AP 进入全局队列 + 每核 idle）**、协作式调度与内核线程演示。代码刻意保持短小可读，**不是**通用桌面或服务器操作系统。
 
-**English (brief):** Minimal educational i386 kernel — Multiboot2, bitmap PMM, identity paging, IRQ0 timer, cooperative scheduling + kernel threads. Single core, ring 0 only, no userspace/syscalls/filesystem.
+**English (brief):** Minimal educational i386 kernel — Multiboot2, bitmap PMM, identity paging, ACPI tables (incl. XSDT), LAPIC timer for ticks, optional IOAPIC/PIC masking, experimental SMP (APs on shared runqueue), cooperative scheduling + kernel threads. Ring 0 only, no userspace/syscalls/filesystem.
 
 ---
 
@@ -30,14 +30,15 @@
 
 | 类别 | 说明 |
 |------|------|
-| **架构** | 仅 i386；单核假设；始终 **Ring 0**。 |
+| **架构** | 仅 i386；始终 **Ring 0**；**最小 SMP**（ACPI 枚举 CPU + SIPI，AP 参与同一环形运行队列）。 |
 | **引导** | Multiboot2；入口校验魔数后调用 `kernel_main`。 |
+| **ACPI** | **RSDP v2**：优先 **XSDT**，否则 **RSDT**；解析 **MADT**：CPU Local APIC、首个 **I/O APIC**、**IRQ source override（IRQ0→GSI）**。热插拔仅占位 `acpi_hotplug_stub_init`。 |
 | **内存** | mmap 驱动的 **4KiB 帧** 位图分配器；内核/Multiboot 信息/位图区 marked used。 |
-| **虚拟内存** | **恒等映射**（虚拟地址 = 物理地址）；静态页目录 + 最多 128 张页表。 |
+| **虚拟内存** | **恒等映射**；静态页目录；**MMIO 页表槽位池**（多 PD 索引可各自挂 PT，不限单张「高地址 PT」）。 |
 | **堆** | BSS 内约 **256 KiB**，块头对齐；**空闲链表首次适配 + bump**。 |
-| **中断** | IDT 填充异常 0–31 与 IRQ 32–47；IRQ0 驱动调度 tick；异常默认打印后 **halt**。 |
-| **调度** | 全局 tick、`need_resched`、延后环形队列、嵌套 **preempt_disable**；**不在 ISR 里切换线程**。 |
-| **线程** | 静态线程池（最多 8）、环形运行队列、`cpu_switch`、Zombie 栈回收。 |
+| **中断 / 定时** | IDT：**异常 0–31**、**PIC IRQ 32–47**、**LAPIC 定时器 64**；定时 tick 走 **LAPIC** + `lapic_eoi`；PIC 默认可全掩；可选 **I/O APIC** 编程 legacy PIT/IRQ0 路由（演示向）。 |
+| **调度** | **每 CPU** tick、`need_resched`、**每 CPU** 延后环、嵌套 **preempt_disable**；**不在 ISR 里切换线程**。 |
+| **线程** | 静态池 **MAX_THREADS 64**、每核 idle（**MAX_SMP_CPU 32**）、**sched_token CAS**、环形队列、`cpu_switch`、Zombie 回收。 |
 | **输出** | COM1 串口轮询输出；VGA 文本缓冲 `0xB8000` 少量提示。 |
 
 ---
@@ -46,11 +47,12 @@
 
 ### 依赖
 
-- **交叉工具链**：如 `i686-elf-gcc`、`i686-elf-as`、`i686-elf-objcopy`、`i686-elf-ld`（见 OSDev Wiki [GCC Cross-Compiler](https://wiki.osdev.org/GCC_Cross-Compiler)）。
+- **推荐（裸机交叉）**：`i686-elf-gcc`、`i686-elf-as`、`i686-elf-objcopy`、`i686-elf-ld`（见 OSDev Wiki [GCC Cross-Compiler](https://wiki.osdev.org/GCC_Cross-Compiler)）。
+- **或在 Linux/WSL 上用宿主 GCC**：`Makefile` 会在检测到 **非** `i686-elf-*` 目标时自动加 **`-m32`**，并使用系统的 `as` / `ld` / `objcopy`；链接需 **32 位 libgcc**，Ubuntu 请安装 **`gcc-multilib`**；嵌入 SMP 跳板二进制时用 **`ld -m elf_i386 -r -b binary`**，避免生成 64 位 `tramp_embed.o`。
 - **GNU Make**。
 - **QEMU**：`qemu-system-i386`。
 
-Windows 用户常用 **MSYS2** 安装 make，交叉编译器需单独安装或自行构建。
+Windows 用户常用 **WSL（Ubuntu）** 或 **MSYS2**；宿主 `cc -m32` 路径需 multilib，交叉 `i686-elf-*` 路径无需。
 
 ### 命令
 
@@ -91,8 +93,8 @@ make clean        # 清理 build 与 *.o
 
 ### 未使用/未深入
 
-- 命令行、引导器名称、ELF 符号、ACPI RSDP、framebuffer 等 tag **未专门解析或使用**。
-- Multiboot2 头里请求了部分信息类型；若需图形/ACPI，需另行解析与驱动。
+- 命令行、引导器名称、ELF 符号、framebuffer 等 tag **未专门使用**。
+- **ACPI New/Old** 等 tag 由 **`mb2_find_rsdp_payload` + `acpi_hw_init`** 走 RSDP 物理区；**不**再要求 Multiboot2 必须带其它 ACPI 专属 tag。
 
 ---
 
@@ -135,6 +137,7 @@ make clean        # 清理 build 与 *.o
   - 静态 `boot_pd[1024]` + **`boot_pt[MAX_ID_PT][1024]`**，其中 **`MAX_ID_PT == 128`**。
   - 页表项：**Present + Read/Write**（内核可写）。
   - 加载 CR3，并在 CR0 未置 PG 时打开分页。
+- **MMIO / 稀疏映射**：多次 `mmio_pt_one` / `paging_map_identity_page` 时，使用 **多张页表层级槽位**（`MMIO_PT_SLOTS`），避免「假设只有一个高 half PD」导致冲突。
 
 ### 局限
 
@@ -166,6 +169,7 @@ make clean        # 清理 build 与 *.o
 
 - **向量 0～31**：CPU 异常，接入 `exc_asm.S` 桩。
 - **向量 32～47**：PIC IRQ，接入 `irq_asm.S` 桩。
+- **向量 64**：LAPIC 定时器，`irq_asm.S` 桩 → `sched_timer_tick()` + `lapic_eoi()`。
 - 门属性固定为项目中使用的 **32 位 interrupt gate** 配置（`0x8E`）。
 
 ### 汇编桩
@@ -175,23 +179,31 @@ make clean        # 清理 build 与 *.o
 
 ### C 层分发（`kernel/interrupt.c`）
 
-- **`verve_irq_dispatch`**：若 `32 ≤ vec < 48`，视为 IRQ；**IRQ0** 调用 `sched_timer_tick()`，然后 `pic_send_eoi`。其他向量组合若误用会打印并 **halt**。
+- **`verve_irq_dispatch`**：**`vec == 64`**：LAPIC 定时器，`sched_timer_tick()` + **`lapic_eoi()`**。**`32 ≤ vec < 48`**：PIC/IOAPIC 向量；若仍用 PIC 8259，`pic_send_eoi`；若启用 LAPIC EOI（定时已迁 LAPIC），对该路径可走 `lapic_eoi`。误用向量会打印并 **halt**。
 - **`verve_exc_dispatch`**：串口打印异常号、错误码、EIP/CS；**#14 页故障**额外打印 **CR2**；然后 **永久 halt** —— **不支持** 从异常返回继续执行。
 
 ---
 
-## 9. PIC 与 PIT
+## 9. PIC、PIT、I/O APIC 与 LAPIC（当前主线）
 
 ### 8259 PIC（`arch/i386/pic.c`）
 
 - 初始化级联；**Master 向量基 0x20**、**Slave 0x28**（与 IDT 32–47 对齐）。
-- 初始化后默认 **屏蔽所有 IRQ**（`0xFF`）。
-- `main` 中 **`pic_irq_unmask(0)`** 仅打开 **定时器 IRQ0**。
+- **`pic_irq_mask_all`**：**全部 IRQ 线屏蔽**，避免与 LAPIC-only 定时路径重复抢中断（若仅用 LAPIC tick，可不依赖 PIC IRQ0）。
+- **旧路径**（若仍演示 PIT）：曾 **`pic_irq_unmask(0)`** 打开 IRQ0；当前 **`kernel_main`** 优先 **ACPI + LAPIC 定时**，PIT 非调度主时钟。
 
 ### PIT 8254（`arch/i386/pit.c`）
 
-- `pit_set_frequency_hz`：通道 0，约 **1193182/divisor** Hz。
-- `kernel_main` 设为约 **50 Hz**。
+- `pit_set_frequency_hz` **仍可用**；默认启动序列以 **LAPIC 周期定时器** 为主调度时钟（约 50 Hz 量级，依 `lapic_timer_periodic` 参数与硬件而定）。
+
+### I/O APIC（`arch/i386/ioapic.c`）
+
+- 若 MADT 提供 **I/O APIC** 与 **IRQ0→GSI**，可 **MMIO 映射** 并写 RTE，将 legacy 定时器线接到 **向量 32**、**BSP** 等（与教材式演示一致）；与 **全掩 PIC** 可同时存在。
+
+### Local APIC（`arch/i386/lapic.c`）
+
+- BSP/AP：**MMIO**（默认 `0xFEE00000`）+ **`lapic_bsp_early_init`** / AP 在线使能。
+- **`lapic_timer_periodic`**：**向量 64** 周期模式 + **EOI**；与 `irq_timer_set_lapic_eoi` 配合。
 
 ---
 
@@ -206,11 +218,11 @@ make clean        # 清理 build 与 *.o
 
 实现：`kernel/sched.c`。
 
-### 全局状态
+### 全局状态（每 CPU）
 
-- **`g_tick`**：IRQ0 每次触发递增。
-- **`g_need_resched`**：每 `PREEMPT_INTERVAL_TICKS`（**5**）个 tick 置位一次。
-- **延后环形队列**：记录 tick（容量 16），满时溢出计数。
+- **`g_tick[cpu]`**：该 CPU 上 LAPIC（或遗留 IRQ0）每次 tick 递增。
+- **`g_need_resched[cpu]`**：每 `PREEMPT_INTERVAL_TICKS`（**5**）个 tick 置位一次。
+- **延后环形队列**：**每 CPU** 一份（容量 16），满时溢出计数。
 - **`g_preempt_disable_depth`**：嵌套临界区；大于 0 时 **`schedule`/`sched_yield`** 路径应直接返回（见 `sched_preempt_disabled`）。
 
 ### 重要设计约束
@@ -229,13 +241,14 @@ make clean        # 清理 build 与 *.o
 
 ### 数据结构与限制
 
-- 静态数组 **`threads[MAX_THREADS]`**，`MAX_THREADS == 8`。
+- 静态数组 **`threads[MAX_THREADS]`**，`MAX_THREADS == 64`。
 - **`main_thread`**：作为环形队列头，**`kstack == NULL`**（使用引导栈）。
 - 子线程：栈由 **`kmalloc(STACK_SIZE)`**，`STACK_SIZE == 4096`。
+- **SMP**：**`g_current[MAX_SMP_CPU]`**，**每核 idle**（`affinity_cpu == 逻辑 CPU 号`），**`sched_token` CAS** 认领可运行线程，避免多核同时拉同一任务。
 
 ### 调度
 
-- **环形链表** 运行队列；**`pick_next`** 只选择 **`THREAD_RUNNABLE`**。
+- **全局环形链表** 运行队列；**`pick_next`** 只选择 **`THREAD_RUNNABLE`** 且 **affinity 匹配**的线程。
 - **`sched_yield`**：保存/恢复标志位；持自旋锁选下一个线程；**`cpu_switch(&old->esp, next->esp)`**。
 - **`cpu_switch`**：保存 callee-saved（`ebp, ebx, esi, edi`）与返回点，切换 `esp`；**不保存 FPU/SSE**，**不换 CR3**。
 
@@ -255,21 +268,22 @@ make clean        # 清理 build 与 *.o
 
 ---
 
-## 13. 刻意未实现的能力
+## 13. 仍刻意未实现或仅限「够用」的能力
 
-以下在本仓库中 **基本不存在** 或 **仅停留在「能继续开发」所需的最低层**：
+以下仍 **不存在**、**极简化**，或仅为 **占位/可扩展**：
 
 | 领域 | 说明 |
 |------|------|
 | 用户态 | 无 Ring 3、无 **syscall/sysenter**、无用户进程/ELF 加载。 |
 | 完整虚拟内存 | 无进程地址空间、无 COW、无按需分页、页错误不可恢复。 |
-| 真正「硬」抢占 | 时钟不直接换栈；需线程执行到 **checkpoint/yield**。 |
+| 真正「硬」抢占 | 定时器只置位 **需要重调度**；**不在 ISR 里换栈**，需 **checkpoint/yield**。 |
 | 睡眠/阻塞 | 无等待队列；无「可阻塞的 mutex」。 |
 | 文件系统 / 块设备 | 无。 |
 | 网络 | 无。 |
-| 键盘/磁盘等 IRQ | PIC 除 IRQ0 外未对外开放示例。 |
-| SMP | 无 APIC、无多核调度。 |
-| 电源管理 | 无 ACPI 运行时代码。 |
+| 键盘/磁盘等 IRQ | 除已用路径外，多数设备 IRQ 未做驱动示例。 |
+| **SMP 完整性** | 无 IPI 迁移、无 per-CPU 队列隔离、无 TSS/IST；**最小** AP 上线 + 共享 runqueue + per-CPU 定时 tick。 |
+| **ACPI** | **无复杂热插拔运行时**（仅 `acpi_hotplug_stub_init`）；RSDP **仅支持表指针落在低 4G 路径**（与当前恒等映射策略一致）。 |
+| 电源管理 | 无休眠/关机策略。 |
 
 ---
 
@@ -283,18 +297,22 @@ VerveOS/
 ├── arch/i386/
 │   ├── boot.S                # Multiboot2、_start、内核栈
 │   ├── context.S             # cpu_switch
-│   ├── exc_asm.S / irq_asm.S # 异常/IRQ 桩
+│   ├── exc_asm.S / irq_asm.S # 异常/IRQ 桩（含 vec 64）
 │   ├── gdt.c / gdt_asm.S
 │   ├── idt.c
 │   ├── paging.c
 │   ├── pic.c / pit.c
+│   ├── lapic.c               # Local APIC、定时
+│   ├── ioapic.c              # I/O APIC RTE（可选）
+│   ├── smp_tramp.S / smp_tramp.ld   # AP 跳板
 ├── include/
-│   ├── arch/i386/            # io、pic、pit
-│   └── verve/                # heap、interrupt、mboot2、paging、pmm、sched、serial、spinlock、thread
+│   ├── arch/i386/            # io、pic、pit、lapic、ioapic
+│   └── verve/                # acpi_hw、heap、interrupt、mboot2、paging、pmm、sched、smp、smp_boot、serial、spinlock、thread …
 └── kernel/
-    ├── main.c                # 启动顺序与演示总控
+    ├── main.c                # ACPI / GDT / IDT / LAPIC / 线程 / SMP / 定时 / 演示
+    ├── acpi_hw.c / acpi_smp.c
     ├── mboot2.c / pmm.c / heap.c
-    ├── interrupt.c / sched.c / serial.c / thread.c
+    ├── interrupt.c / sched.c / serial.c / thread.c / smp.c
 ```
 
 ---

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define MB2_MAGIC 0x36d76289u
@@ -10,6 +11,8 @@
 #define MB2_TAG_BOOTLOADER   2
 #define MB2_TAG_BASIC_MEMINFO 4
 #define MB2_TAG_MMAP         6
+#define MB2_TAG_ACPI_OLD     14
+#define MB2_TAG_ACPI_NEW     15
 
 #define MB2_MMAP_AVAILABLE 1
 
@@ -39,3 +42,6 @@ bool mb2_read_basic_meminfo(const struct mb2_fixed *info,
 
 bool mb2_for_each_available(const struct mb2_fixed *info, mb2_avail_cb fn,
     void *ctx);
+
+bool mb2_find_rsdp_payload(const struct mb2_fixed *info, uint8_t *out_buf,
+    size_t out_cap, size_t *out_len);

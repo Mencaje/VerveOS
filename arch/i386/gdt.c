@@ -1,5 +1,6 @@
 #include <verve/interrupt.h>
 
+#include <stddef.h>
 #include <stdint.h>
 
 extern void gdt_flush(void);

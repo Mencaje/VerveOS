@@ -37,6 +37,12 @@ void pic_init(uint8_t master_vector_base, uint8_t slave_vector_base)
     verve_outb(PIC2_DATA, 0xFFu);
 }
 
+void pic_irq_mask_all(void)
+{
+    verve_outb(PIC1_DATA, 0xFFu);
+    verve_outb(PIC2_DATA, 0xFFu);
+}
+
 void pic_irq_unmask(uint8_t irq_line)
 {
     uint16_t port = irq_line < 8u ? PIC1_DATA : PIC2_DATA;

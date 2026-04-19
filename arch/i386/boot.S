@@ -6,20 +6,20 @@ multiboot2_header_start:
     .long 0xe85250d6
     .long 0
     .long multiboot2_header_end - multiboot2_header_start
-    .long -(0xe85250d6 + 0 + (multiboot2_header_end - multiboot2_header_start))
+    .long 0x17adaec0
 
 .align 8
 info_req_start:
-    .word 1
-    .word 0
+    .long 1
+    .long 0
     .long info_req_end - info_req_start
     .long 6
     .long 4
+    .long 15
 info_req_end:
 
 .align 8
-    .word 0
-    .word 0
+    .long 0
     .long 8
 multiboot2_header_end:
 

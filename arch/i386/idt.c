@@ -53,6 +53,8 @@ extern void irq_45(void);
 extern void irq_46(void);
 extern void irq_47(void);
 
+extern void irq_64(void);
+
 struct idt_gate {
     uint16_t off_lo;
     uint16_t sel;
@@ -112,6 +114,8 @@ void idt_init(void)
         for (size_t i = 0; i < 16; ++i)
             idt_set((uint8_t)(32 + i), (uintptr_t)irq_stubs[i]);
     }
+
+    idt_set(64u, (uintptr_t)irq_64);
 
     struct idtr idtr;
 
