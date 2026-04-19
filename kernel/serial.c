@@ -1,4 +1,8 @@
+#if defined(__x86_64__)
+#include <arch/x86_64/io.h>
+#else
 #include <arch/i386/io.h>
+#endif
 #include <verve/spinlock.h>
 
 #include <stddef.h>

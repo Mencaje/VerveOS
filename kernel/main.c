@@ -95,7 +95,7 @@ void kernel_main(uint32_t magic, uint32_t mb_info_phys)
     heap_init();
     serial_puts("[VerveOS] heap: bump kmalloc arena (256 KiB BSS)\r\n");
 
-    if (!paging_identity_init(pmm_max_pfn())) {
+    if (!paging_identity_init((uint32_t)pmm_max_pfn())) {
         serial_puts("[VerveOS] paging_identity_init failed\r\n");
         vga_puts(1, 0, 0xF, 0x0, "Multiboot2: OK");
         vga_puts(2, 0, 0xC, 0x0, "paging failed");
