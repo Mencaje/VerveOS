@@ -452,7 +452,12 @@ VerveOS/
 
 ## 16. 许可证
 
-若本仓库根目录包含 `LICENSE` 文件，以该文件为准；**若尚未添加**，在补充许可证之前，默认 **All Rights Reserved**（或按组织策略在 GitHub 上选择模板）。建议在仓库设置中明确 **开源许可证** 以便他人合法使用与再分发。
+本仓库在根目录提供 **`LICENSE` 文件，采用 [MIT License](https://opensource.org/licenses/MIT)（与 GitHub 创建仓库时选择的 **MIT 模板** 同族；具体以本仓库内文本为准）。
+
+- **版权行**见 `LICENSE` 文首（**Copyright (c) … Mencaje (萌创匠盒) / VerveOS Kernel Project**）。
+- 在 **MIT** 条件下，你可以自由使用、修改、再发布本软件，**但**须保留原文中的 **版权声明** 与 **许可全文**（或其中对再分发的要求）。**按原样提供、无担保** 等条款以 `LICENSE` 英文原文为准；若与本文档或他人转述有冲突，**以 `LICENSE` 文件为最终依据**。
+
+**English:** This project is distributed under the **MIT License**; see the `LICENSE` file in the repository root. The notice and permission text there are authoritative for redistribution and warranty disclaimer.
 
 ---
 
