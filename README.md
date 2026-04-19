@@ -4,6 +4,10 @@
 
 **English (brief):** Minimal educational i386 kernel — Multiboot2, bitmap PMM, identity paging, ACPI tables (incl. XSDT), LAPIC timer for ticks, optional IOAPIC/PIC masking, experimental SMP (APs on shared runqueue), cooperative scheduling + kernel threads. Ring 0 only, no userspace/syscalls/filesystem.
 
+### 当前里程碑（与 GitHub 同步）
+
+**2026-04：** **x86_64（`make amd64`）** 已与主线 **bring-up 能力对齐**：Multiboot2 ELF32 外壳 → **long mode** → **`kernel_main_amd64`**（**0x200000**）；恒等分页（含 **LAPIC MMIO**）、位图 PMM、**heap**、IDT、**LAPIC 周期定时（向量 64）**、`pic_irq_mask_all`、**协作式调度 + `cpu_switch` + 线程演示**。amd64 侧仍为 **实验路径**：**真实 SMP/AP、I/O APIC** 等尚未与 i386 同级。
+
 ---
 
 ## 目录
@@ -30,8 +34,8 @@
 
 | 类别 | 说明 |
 |------|------|
-| **架构** | 仅 i386；始终 **Ring 0**；**最小 SMP**（ACPI 枚举 CPU + SIPI，AP 参与同一环形运行队列）。 |
-| **引导** | Multiboot2；入口校验魔数后调用 `kernel_main`。 |
+| **架构** | **主线 i386**：Ring 0；**最小 SMP**。另有一条 **实验性 x86_64**：`make amd64` → **ELF32 Multiboot2 外壳 + 0x200000 处 64 位内核**（分页/PMM/heap/IDT/**LAPIC 定时**/调度线程等已接；**SMP/AP、IOAPIC** 等仍弱于 i386）。 |
+| **引导** | Multiboot2：i386 调 `kernel_main`；x86_64 为 **Multiboot2 的 32 位入口**（`boot_chain32`）→ 长模式桩（`long64_stub`）→ `kernel_main_amd64`（**0x200000** 处 64 位 C，**与** i386 主核不同一棵 `linker.ld`）。 |
 | **ACPI** | **RSDP v2**：优先 **XSDT**，否则 **RSDT**；解析 **MADT**：CPU Local APIC、首个 **I/O APIC**、**IRQ source override（IRQ0→GSI）**。热插拔仅占位 `acpi_hotplug_stub_init`。 |
 | **内存** | mmap 驱动的 **4KiB 帧** 位图分配器；内核/Multiboot 信息/位图区 marked used。 |
 | **虚拟内存** | **恒等映射**；静态页目录；**MMIO 页表槽位池**（多 PD 索引可各自挂 PT，不限单张「高地址 PT」）。 |
@@ -50,19 +54,31 @@
 - **推荐（裸机交叉）**：`i686-elf-gcc`、`i686-elf-as`、`i686-elf-objcopy`、`i686-elf-ld`（见 OSDev Wiki [GCC Cross-Compiler](https://wiki.osdev.org/GCC_Cross-Compiler)）。
 - **或在 Linux/WSL 上用宿主 GCC**：`Makefile` 会在检测到 **非** `i686-elf-*` 目标时自动加 **`-m32`**，并使用系统的 `as` / `ld` / `objcopy`；链接需 **32 位 libgcc**，Ubuntu 请安装 **`gcc-multilib`**；嵌入 SMP 跳板二进制时用 **`ld -m elf_i386 -r -b binary`**，避免生成 64 位 `tramp_embed.o`。
 - **GNU Make**。
-- **QEMU**：`qemu-system-i386`。
+- **QEMU**：运行 i386 内核用 **`qemu-system-i386`**；运行 x86_64 内核另需 **`qemu-system-x86_64`**（Ubuntu 包名 **`qemu-system-x86`**：`sudo apt install qemu-system-x86`）。
 
 Windows 用户常用 **WSL（Ubuntu）** 或 **MSYS2**；宿主 `cc -m32` 路径需 multilib，交叉 `i686-elf-*` 路径无需。
 
 ### 命令
 
 ```bash
-make              # 生成 build/verve-kernel.elf
-make qemu         # qemu-system-i386 -kernel build/verve-kernel.elf -serial stdio -display none
-make clean        # 清理 build 与 *.o
+make                 # 默认 i386：build/verve-kernel.elf
+make qemu            # qemu-system-i386 -kernel build/verve-kernel.elf -serial stdio -display none
+make amd64           # x86_64 长模式：build/verve-kernel-x86_64.elf（需宿主 gcc 支持 -m64）
+make qemu-amd64      # qemu-system-x86_64 -nographic -kernel …（默认 -machine pc-i440fx-3.1）
+make qemu-amd64-iso  # GRUB multiboot2 ISO → QEMU -cdrom（需 grub-common、xorriso；见下）
+make clean           # 清理 build 与常见 *.o
 ```
 
-构建产物：`build/verve-kernel.elf`（Multiboot2 可加载 ELF）。
+构建产物：
+
+- `build/verve-kernel.elf`：32 位 i386，功能完整（本仓库原主线）。
+- `build/verve-kernel-x86_64.elf`：**ELF32 i386 Multiboot2 外壳**：`boot_chain32` → `long64_stub` → **`0x200000`** 处 **ELF64** 内核（`linker_amd64_inner.ld`）。内侧已实现 **`paging_amd64`**（含 **0xFEE00000** 恒等区以访问 xAPIC）、**`pmm.c`**、**`heap.c`**、**`sched_amd64` / `thread_amd64` / `context_amd64.S`**、**`lapic_amd64`**（**LAPIC 周期定时** **vec 64** + **`lapic_eoi`**，**`pic_irq_mask_all`** 与 i386 同策略）、**`smp_stub_amd64`**（**BSP** 占位）。**`pit_amd64` 已不链入**（可再启做 PIT 实验）。**尚未**：真实 **SMP/AP**、**I/O APIC** 等与 i386 对齐。
+
+`make amd64` 同时用到 **宿主 `cc -m32`**（外壳与 blob 嵌入链接）与 **`-m64`**（内侧 C/汇编）。**64 位** 目标文件输出在 **`build/amd64_inner/`**，与默认 `make` 在源码树生成的 **`kernel/*.o`（`-m32`）** 分离，避免混链。Ubuntu/WSL 请安装 **`gcc-multilib`**。若报错 **`code model kernel does not support PIC mode`**，Makefile 已对 **内外层** 关闭 **PIC/PIE**（`-fno-pic -fno-pie`、链接 `-no-pie`）。
+
+校验镜像是否为 Multiboot2：**`grub-file --is-x86-multiboot2 build/verve-kernel-x86_64.elf`**（退出码为 0 表示通过）。
+
+若 **`qemu-system-x86_64`: Error loading uncompressed kernel without PVH ELF Note**：避开默认 **`pc`**（例如 **`QEMU_AMD64_MACHINE=pc-i440fx-3.1`**）；**`-machine microvm`** 等机型可能仍要求 PVH。**`-kernel`** 在某些 QEMU 版本上长时间停在 SeaBIOS「Booting from ROM」而未进入来宾；可换 **`pc-i440fx-2.11`**、升级 QEMU，或使用 **`make qemu-amd64-iso`**（依赖 **`grub-mkrescue`**、通常 **`grub-pc-bin`** / **`xorriso`**）。ISO 若仍报 **no multiboot header**，请确认 **`grub-file`** 校验通过且 ISO 中的 **`/boot/kernel.elf`** 与 `build` 产物一致。
 
 ---
 
@@ -293,6 +309,7 @@ make clean        # 清理 build 与 *.o
 VerveOS/
 ├── Makefile
 ├── linker.ld
+├── linker_amd64.ld           # x86_64 链接脚本
 ├── README.md                 # 本文件
 ├── arch/i386/
 │   ├── boot.S                # Multiboot2、_start、内核栈
@@ -305,11 +322,15 @@ VerveOS/
 │   ├── lapic.c               # Local APIC、定时
 │   ├── ioapic.c              # I/O APIC RTE（可选）
 │   ├── smp_tramp.S / smp_tramp.ld   # AP 跳板
+├── arch/x86_64/
+│   ├── boot_chain.S          # 32 位入核 → 长模式 → kernel_main_amd64
 ├── include/
 │   ├── arch/i386/            # io、pic、pit、lapic、ioapic
+│   ├── arch/x86_64/          # io（inb/outb，与 32 位同语意）
 │   └── verve/                # acpi_hw、heap、interrupt、mboot2、paging、pmm、sched、smp、smp_boot、serial、spinlock、thread …
 └── kernel/
     ├── main.c                # ACPI / GDT / IDT / LAPIC / 线程 / SMP / 定时 / 演示
+    ├── main_amd64.c          # x86_64 最小 C 入口（与 i386 主线分离）
     ├── acpi_hw.c / acpi_smp.c
     ├── mboot2.c / pmm.c / heap.c
     ├── interrupt.c / sched.c / serial.c / thread.c / smp.c

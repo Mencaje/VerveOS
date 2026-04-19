@@ -1,6 +1,7 @@
 #include <verve/pmm.h>
 
 #include <stddef.h>
+#include <stdint.h>
 
 #define FRAME_SHIFT 12u
 #define FRAME_SIZE  (1u << FRAME_SHIFT)
@@ -9,8 +10,10 @@ extern char kernel_image_begin[];
 extern char kernel_image_end[];
 
 static uint8_t *bitmap;
-static uint32_t bitmap_byte_len;
-static uint32_t frame_count;
+
+/* Bitmap length in bytes / frame count — x86 may need full 64-bit PFN space */
+static size_t bitmap_byte_len;
+static uint64_t frame_count;
 
 static inline uintptr_t align_up(uintptr_t x, uintptr_t a)
 {
@@ -22,33 +25,42 @@ static inline uintptr_t align_down(uintptr_t x, uintptr_t a)
     return x & ~(a - 1u);
 }
 
-static inline uint32_t phys_pfn(uintptr_t p)
+static inline uint64_t phys_pfn(uintptr_t p)
 {
-    return (uint32_t)(p >> FRAME_SHIFT);
+    return (uint64_t)p >> FRAME_SHIFT;
 }
 
-static void bm_set(uint32_t pfn)
+static void bm_set(uint64_t pfn)
 {
-    uint32_t i = pfn >> 3;
-    uint32_t b = pfn & 7u;
+    if (pfn >= frame_count)
+        return;
+
+    size_t i = (size_t)(pfn >> 3);
+    uint32_t b = (uint32_t)(pfn & 7u);
 
     bitmap[i] = (uint8_t)(bitmap[i] | (uint8_t)(1u << b));
 }
 
-static void bm_clear(uint32_t pfn)
+static void bm_clear(uint64_t pfn)
 {
-    uint32_t i = pfn >> 3;
-    uint32_t b = pfn & 7u;
+    if (pfn >= frame_count)
+        return;
+
+    size_t i = (size_t)(pfn >> 3);
+    uint32_t b = (uint32_t)(pfn & 7u);
 
     bitmap[i] = (uint8_t)(bitmap[i] & (uint8_t)~(1u << b));
 }
 
-static int bm_get(uint32_t pfn)
+static int bm_get(uint64_t pfn)
 {
-    uint32_t i = pfn >> 3;
-    uint32_t b = pfn & 7u;
+    if (pfn >= frame_count)
+        return 1;
 
-    return (bitmap[i] >> b) & 1u;
+    size_t i = (size_t)(pfn >> 3);
+    uint32_t b = (uint32_t)(pfn & 7u);
+
+    return (bitmap[i] >> b) & 1;
 }
 
 static void bm_fill(uint8_t v, size_t n)
@@ -66,7 +78,7 @@ static void frames_mark_used(uintptr_t begin, uintptr_t end)
     uintptr_t e = align_up(end, FRAME_SIZE);
 
     for (uintptr_t p = b; p < e; p += FRAME_SIZE) {
-        uint32_t pfn = phys_pfn(p);
+        uint64_t pfn = phys_pfn((uintptr_t)p);
 
         if (pfn < frame_count)
             bm_set(pfn);
@@ -82,7 +94,7 @@ static void frames_mark_free(uintptr_t begin, uintptr_t end)
     uintptr_t e = align_up(end, FRAME_SIZE);
 
     for (uintptr_t p = b; p < e; p += FRAME_SIZE) {
-        uint32_t pfn = phys_pfn(p);
+        uint64_t pfn = phys_pfn((uintptr_t)p);
 
         if (pfn < frame_count)
             bm_clear(pfn);
@@ -117,10 +129,10 @@ bool pmm_init(const struct mb2_fixed *info, uint32_t mb_info_phys)
         return false;
 
     uint64_t last_byte = mx.max_end - 1u;
-    uint32_t last_pfn = (uint32_t)(last_byte >> FRAME_SHIFT);
+    uint64_t last_pfn = last_byte >> FRAME_SHIFT;
 
     frame_count = last_pfn + 1u;
-    bitmap_byte_len = (frame_count + 7u) / 8u;
+    bitmap_byte_len = (size_t)((frame_count + 7u) / 8u);
 
     uintptr_t bm_base = align_up((uintptr_t)kernel_image_end, FRAME_SIZE);
 
@@ -150,19 +162,21 @@ bool pmm_init(const struct mb2_fixed *info, uint32_t mb_info_phys)
     return true;
 }
 
-uint32_t pmm_frame_count(void)
+uint64_t pmm_frame_count(void)
 {
     return frame_count;
 }
 
-uint32_t pmm_max_pfn(void)
+uint64_t pmm_max_pfn(void)
 {
     return frame_count ? frame_count - 1u : 0u;
 }
 
 uintptr_t pmm_alloc_frame(void)
 {
-    for (uint32_t pfn = 1; pfn < frame_count; ++pfn) {
+    uint64_t pfn;
+
+    for (pfn = 1u; pfn < frame_count; ++pfn) {
         if (bm_get(pfn) == 0) {
             bm_set(pfn);
             return ((uintptr_t)pfn) << FRAME_SHIFT;
@@ -174,10 +188,12 @@ uintptr_t pmm_alloc_frame(void)
 
 void pmm_free_frame(uintptr_t phys)
 {
+    uint64_t pfn;
+
     if ((phys & (FRAME_SIZE - 1u)) != 0)
         return;
 
-    uint32_t pfn = phys_pfn(phys);
+    pfn = phys_pfn(phys);
 
     if (pfn == 0 || pfn >= frame_count)
         return;
